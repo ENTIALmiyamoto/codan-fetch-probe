@@ -1,0 +1,53 @@
+name: Public rental page comparison
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: public-rental-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    if: github.repository == 'ENTIALmiyamoto/codan-fetch-probe'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Install pinned browser library
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Compare public page responses
+        run: |
+          node --input-type=module <<'JS'
+          import { chromium } from 'playwright';
+          import { appendFileSync } from 'node:fs';
+          const origin='https://rent.tokyu-housing-lease.co.jp';
+          const paths=[
+            '/rent_search/'+encodeURIComponent('東京都')+'/'+encodeURIComponent('江東区'),
+            '/rent/8021383/60618',
+            '/rent/8021386/81277'
+          ];
+          const browser=await chromium.launch();
+          const results=[];
+          try {
+            for(const path of paths) {
+              const context=await browser.newContext();
+              const page=await context.newPage();
+              await page.route('**/*',route=>['image','media','font'].includes(route.request().resourceType())?route.abort():route.continue());
+              const start=Date.now();
+              try {
+                const response=await page.goto(origin+path,{waitUntil:'domcontentloaded',timeout:20000});
+                const selector=path.startsWith('/rent_search/')?'#search_result_num':'#page_title';
+                let ready=false;
+                try {await page.locator(selector).waitFor({timeout:15000});ready=true;}catch{}
+                const html=await page.content();
+                results.push({path,status:response?.status(),title:await page.title(),chars:html.length,selectorFound:ready,elapsedMs:Date.now()-start});
+              }catch(e){results.push({path,error:e.name,elapsedMs:Date.now()-start});}
+              await context.close();
+              await new Promise(resolve=>setTimeout(resolve,11000));
+            }
+          }finally{await browser.close();}
+          console.log(JSON.stringify({checkedAt:new Date().toISOString(),results},null,2));
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,'## Public page comparison\n\n```json\n'+JSON.stringify(results,null,2)+'\n```\n');
+          if(results.some(r=>!r.selectorFound))process.exitCode=1;
+          JS
