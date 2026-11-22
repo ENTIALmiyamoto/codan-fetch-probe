@@ -15,8 +15,8 @@ jobs:
       - name: Install pinned browser library
         run: |
           npm install --no-save --package-lock=false playwright@1.56.1
-          npx playwright install --with-deps chromium
-      - name: Compare full resources and listing navigation
+          npx playwright install --with-deps chrome
+      - name: Compare standard Google Chrome on one room
         run: |
           node --input-type=module <<'JS'
           import { chromium } from 'playwright';
@@ -25,7 +25,8 @@ jobs:
           const detail='/rent/8021383/60618';
           const listing='/rent_search/'+encodeURIComponent('東京都')+'/'+encodeURIComponent('江東区');
           mkdirSync('evidence',{recursive:true});
-          const browser=await chromium.launch();
+          const browser=await chromium.launch({channel:'chrome'});
+          const browserVersion=browser.version();
           const results=[];
           const safeUrl=u=>{try{const v=new URL(u);return v.origin+v.pathname;}catch{return 'invalid';}};
           async function inspect(page,label,action,selector){
@@ -45,28 +46,11 @@ jobs:
            }catch(e){const result={label,error:e.name,responses,elapsedMs:Date.now()-started};results.push(result);return result;}
           }
           try{
-           const b=await browser.newContext();const q=await b.newPage();
-           await inspect(q,'02-full-resources',()=>q.goto(origin+detail,{waitUntil:'domcontentloaded',timeout:20000}),'#page_title');
-           await b.close();
-           await new Promise(r=>setTimeout(r,11000));
-           const c=await browser.newContext();const s=await c.newPage();
-           const third=await inspect(s,'03-listing',()=>s.goto(origin+listing,{waitUntil:'domcontentloaded',timeout:20000}),'#search_result_num');
-           if(third.denied||!third.selectorFound){results.push({decision:'LISTING_UNAVAILABLE_CLICK_NOT_POSSIBLE'});}
-           else{
-            const link=s.locator('a[href="'+detail+'"],a[href="'+origin+detail+'"]').first();
-            if(await link.count()){
-             const target=await link.getAttribute('target');
-             if(target==='_blank'){
-              const popup=c.waitForEvent('page',{timeout:15000});
-              await link.click({timeout:15000});
-              const p=await popup;
-              await inspect(p,'04-detail-click',()=>p.waitForLoadState('domcontentloaded',{timeout:20000}),'#page_title');
-             }else await inspect(s,'04-detail-click',()=>link.click({timeout:15000}),'#page_title');
-            }else results.push({decision:'TARGET_LINK_NOT_ON_FIRST_PAGE'});
-           }
-           await c.close();
+           const context=await browser.newContext();const page=await context.newPage();
+           await inspect(page,'05-google-chrome',()=>page.goto(origin+detail,{waitUntil:'domcontentloaded',timeout:20000}),'#page_title');
+           await context.close();
           }finally{await browser.close();}
-          const report={checkedAt:new Date().toISOString(),results};
+          const report={checkedAt:new Date().toISOString(),browserChannel:'chrome',browserVersion,results};
           writeFileSync('evidence/report.json',JSON.stringify(report,null,2));
           console.log(JSON.stringify(report,null,2));
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,'## One-room diagnosis\n\n```json\n'+JSON.stringify(report,null,2)+'\n```\n');
