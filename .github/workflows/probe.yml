@@ -9,7 +9,7 @@ concurrency:
 jobs:
   probe:
     if: github.repository == 'ENTIALmiyamoto/codan-fetch-probe'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 6
     steps:
       - name: Install pinned browser library
