@@ -16,16 +16,16 @@ jobs:
         run: |
           npm install --no-save --package-lock=false playwright@1.56.1
           npx playwright install --with-deps chrome
-      - name: Compare standard Google Chrome on one room
+      - name: Compare headed Chrome on one room
         run: |
-          node --input-type=module <<'JS'
+          xvfb-run -a node --input-type=module <<'JS'
           import { chromium } from 'playwright';
           import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
           const origin='https://rent.tokyu-housing-lease.co.jp';
           const detail='/rent/8021383/60618';
           const listing='/rent_search/'+encodeURIComponent('東京都')+'/'+encodeURIComponent('江東区');
           mkdirSync('evidence',{recursive:true});
-          const browser=await chromium.launch({channel:'chrome'});
+          const browser=await chromium.launch({channel:'chrome',headless:false});
           const browserVersion=browser.version();
           const results=[];
           const safeUrl=u=>{try{const v=new URL(u);return v.origin+v.pathname;}catch{return 'invalid';}};
@@ -36,7 +36,7 @@ jobs:
            const started=Date.now();
            try{
            await action();
-           await page.locator(selector).waitFor({timeout:15000}).catch(()=>{});
+           await page.locator(selector).waitFor({timeout:30000}).catch(()=>{});
            const title=await page.title(), html=await page.content();
            const last=responses.at(-1);
            const denied=responses.some(r=>r.headers['cf-mitigated']==='challenge')||[401,403,429].includes(last?.status)||/just a moment|access denied|forbidden/i.test(title)||/Your request was blocked\./i.test(html);
@@ -47,10 +47,10 @@ jobs:
           }
           try{
            const context=await browser.newContext();const page=await context.newPage();
-           await inspect(page,'05-google-chrome',()=>page.goto(origin+detail,{waitUntil:'domcontentloaded',timeout:20000}),'#page_title');
+           await inspect(page,'06-headed-chrome',()=>page.goto(origin+detail,{waitUntil:'domcontentloaded',timeout:20000}),'#page_title');
            await context.close();
           }finally{await browser.close();}
-          const report={checkedAt:new Date().toISOString(),browserChannel:'chrome',browserVersion,results};
+          const report={checkedAt:new Date().toISOString(),browserChannel:'chrome',headless:false,browserVersion,results};
           writeFileSync('evidence/report.json',JSON.stringify(report,null,2));
           console.log(JSON.stringify(report,null,2));
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,'## One-room diagnosis\n\n```json\n'+JSON.stringify(report,null,2)+'\n```\n');
