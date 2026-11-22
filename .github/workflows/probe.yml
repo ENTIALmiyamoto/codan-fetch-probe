@@ -16,38 +16,73 @@ jobs:
         run: |
           npm install --no-save --package-lock=false playwright@1.56.1
           npx playwright install --with-deps chromium
-      - name: Compare public page responses
+      - name: Diagnose one public room and stop on denial
         run: |
           node --input-type=module <<'JS'
           import { chromium } from 'playwright';
-          import { appendFileSync } from 'node:fs';
+          import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
           const origin='https://rent.tokyu-housing-lease.co.jp';
-          const paths=[
-            '/rent_search/'+encodeURIComponent('東京都')+'/'+encodeURIComponent('江東区'),
-            '/rent/8021383/60618',
-            '/rent/8021386/81277'
-          ];
+          const detail='/rent/8021383/60618';
+          const listing='/rent_search/'+encodeURIComponent('東京都')+'/'+encodeURIComponent('江東区');
+          mkdirSync('evidence',{recursive:true});
           const browser=await chromium.launch();
           const results=[];
-          try {
-            for(const path of paths) {
-              const context=await browser.newContext();
-              const page=await context.newPage();
-              await page.route('**/*',route=>['image','media','font'].includes(route.request().resourceType())?route.abort():route.continue());
-              const start=Date.now();
-              try {
-                const response=await page.goto(origin+path,{waitUntil:'domcontentloaded',timeout:20000});
-                const selector=path.startsWith('/rent_search/')?'#search_result_num':'#page_title';
-                let ready=false;
-                try {await page.locator(selector).waitFor({timeout:15000});ready=true;}catch{}
-                const html=await page.content();
-                results.push({path,status:response?.status(),title:await page.title(),chars:html.length,selectorFound:ready,elapsedMs:Date.now()-start});
-              }catch(e){results.push({path,error:e.name,elapsedMs:Date.now()-start});}
-              await context.close();
-              await new Promise(resolve=>setTimeout(resolve,11000));
-            }
+          const safeUrl=u=>{try{const v=new URL(u);return v.origin+v.pathname;}catch{return 'invalid';}};
+          async function inspect(page,label,action,selector){
+           const responses=[];
+           page.on('response',r=>{if(r.request().isNavigationRequest()&&r.frame()===page.mainFrame()){
+           const h=r.headers();responses.push({url:safeUrl(r.url()),status:r.status(),headers:Object.fromEntries(['server','content-type','cf-mitigated','cf-ray','retry-after'].filter(k=>h[k]).map(k=>[k,h[k]]))});}});
+           const started=Date.now();
+           try{
+           await action();
+           await page.locator(selector).waitFor({timeout:15000}).catch(()=>{});
+           const title=await page.title(), html=await page.content();
+           const last=responses.at(-1);
+           const denied=responses.some(r=>r.headers['cf-mitigated']==='challenge')||[401,403,429].includes(last?.status)||/just a moment|access denied|forbidden/i.test(title)||/Your request was blocked\./i.test(html);
+           const result={label,url:safeUrl(page.url()),title,chars:html.length,selectorFound:await page.locator(selector).count()>0,denied,responses,elapsedMs:Date.now()-started};
+           await page.screenshot({path:'evidence/'+label+'.png',fullPage:false});
+           results.push(result);return result;
+           }catch(e){const result={label,error:e.name,responses,elapsedMs:Date.now()-started};results.push(result);return result;}
+          }
+          try{
+           const a=await browser.newContext();
+           const p=await a.newPage();
+           await p.route('**/*',r=>['image','media','font'].includes(r.request().resourceType())?r.abort():r.continue());
+           const first=await inspect(p,'01-baseline',()=>p.goto(origin+detail,{waitUntil:'domcontentloaded',timeout:20000}),'#page_title');
+           await a.close();
+           if(first.denied){results.push({decision:'STOP_CONFIRMED_DENIAL',skipped:['02-full-resources','03-listing-click']});}
+           else{
+           await new Promise(r=>setTimeout(r,11000));
+           const b=await browser.newContext();const q=await b.newPage();
+           const second=await inspect(q,'02-full-resources',()=>q.goto(origin+detail,{waitUntil:'domcontentloaded',timeout:20000}),'#page_title');await b.close();
+           if(second.denied){results.push({decision:'STOP_CONFIRMED_DENIAL',skipped:['03-listing-click']});}
+           else{
+           await new Promise(r=>setTimeout(r,11000));
+           const c=await browser.newContext();const s=await c.newPage();
+           const third=await inspect(s,'03-listing',()=>s.goto(origin+listing,{waitUntil:'domcontentloaded',timeout:20000}),'#search_result_num');
+           if(third.denied){results.push({decision:'STOP_LISTING_DENIAL'});}
+           else{
+           const link=s.locator('a[href="'+detail+'"],a[href="'+origin+detail+'"]').first();
+           if(await link.count()){
+           const popup=s.waitForEvent('popup',{timeout:5000}).catch(()=>null);
+           await link.evaluate(el=>el.removeAttribute('target'));
+           await inspect(s,'04-detail-click',()=>link.click({timeout:15000}),'#page_title');
+           await popup;
+           }else results.push({decision:'TARGET_LINK_NOT_ON_FIRST_PAGE'});
+           }await c.close();
+           }
+           }
           }finally{await browser.close();}
-          console.log(JSON.stringify({checkedAt:new Date().toISOString(),results},null,2));
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY,'## Public page comparison\n\n```json\n'+JSON.stringify(results,null,2)+'\n```\n');
-          if(results.some(r=>!r.selectorFound))process.exitCode=1;
+          const report={checkedAt:new Date().toISOString(),results};
+          writeFileSync('evidence/report.json',JSON.stringify(report,null,2));
+          console.log(JSON.stringify(report,null,2));
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,'## One-room diagnosis\n\n```json\n'+JSON.stringify(report,null,2)+'\n```\n');
+          
           JS
+      - name: Preserve public-page diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: one-room-diagnosis
+          path: evidence/
+          retention-days: 1
